@@ -10,7 +10,7 @@
 			<key>default</key>
 			<string>YES</string>
 			<key>defaults</key>
-			<string>org.unixlife.ios.cydia.lockinfo.ThingsPlugin</string>
+			<string>org.smenus.lockinfo.iStudiezPlugin</string>
 			<key>key</key>
 			<string>Enabled</string>
 			<key>label</key>
@@ -20,13 +20,13 @@
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
-			<string>YES</string>
+			<string>NO</string>
 			<key>defaults</key>
-			<string>org.unixlife.ios.cydia.lockinfo.ThingsPlugin</string>
+			<string>org.smenus.lockinfo.iStudiezPlugin</string>
 			<key>key</key>
-			<string>ShowNext</string>
+			<string>ShowEarlier</string>
 			<key>label</key>
-			<string>Show Next Tasks</string>
+			<string>Show Earlier Classes</string>
 		</dict>
 		<dict>
 			<key>detail</key>
@@ -34,16 +34,16 @@
 			<key>cell</key>
 			<string>PSLinkListCell</string>
 			<key>default</key>
-			<string>1</string>
+			<string>-1</string>
 			<key>defaults</key>
-			<string>org.unixlife.ios.cydia.lockinfo.ThingsPlugin</string>
+			<string>org.smenus.lockinfo.iStudiezPlugin</string>
 			<key>key</key>
-			<string>DueInDays</string>
+			<string>FutureDays</string>
 			<key>label</key>
-			<string>Due in Days</string>
+			<string>Show Extra Days</string>
 			<key>validTitles</key>
 			<array>
-				<string>Do not show due</string>
+				<string>None</string>
 				<string>1</string>
 				<string>2</string>
 				<string>3</string>
@@ -51,9 +51,6 @@
 				<string>5</string>
 				<string>6</string>
 				<string>7</string>
-				<string>14</string>
-				<string>30</string>
-				<string>All</string>
 			</array>
 			<key>validValues</key>
 			<array>
@@ -65,13 +62,10 @@
 				<string>5</string>
 				<string>6</string>
 				<string>7</string>
-				<string>14</string>
-				<string>30</string>
-				<string>999</string>
 			</array>
 		</dict>
 	</array>
 	<key>title</key>
-	<string>Things</string>
+	<string>iStudiez</string>
 </dict>
 </plist>

@@ -1,6 +1,6 @@
-# Things Plugin for LockInfo
+# iStudiez Plugin for LockInfo
 
-Show Inbox/Today, Next and Scheduled task in LockInfo
+Show Now, Today and assignments in LockInfo
 
 ### Build
 

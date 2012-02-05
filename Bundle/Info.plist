@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleDisplayName</key>
-	<string>Things</string>
+	<string>iStudiez</string>
 	<key>CFBundleExecutable</key>
-	<string>ThingsPlugin</string>
+	<string>org.smenus.lockinfo.iStudiezPlugin</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.unixlife.ios.cydia.lockinfo.ThingsPlugin</string>
+	<string>org.smenus.lockinfo.iStudiezPlugin</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>ThingsPlugin</string>
+	<string>iStudiez</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,10 +25,10 @@
 	<key>DTPlatformName</key>
 	<string>iphoneos</string>
 	<key>DTSDKName</key>
-	<string>iphoneos2.2.internal</string>
+	<string>iphoneos5.0.internal</string>
 	<key>MinimumOSVersion</key>
-	<string>4.3</string>
+	<string>5.0</string>
 	<key>NSPrincipalClass</key>
-	<string>ThingsPlugin</string>
+	<string>iStudiezPlugin</string>
 </dict>
 </plist>

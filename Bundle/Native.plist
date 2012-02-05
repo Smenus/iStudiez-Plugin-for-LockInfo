@@ -14,7 +14,7 @@
 			<key>default</key>
 			<false/>
 			<key>defaults</key>
-			<string>org.unixlife.ios.cydia.lockinfo.ThingsPlugin</string>
+			<string>org.smenus.lockinfo.iStudiezPlugin</string>
 			<key>key</key>
 			<string>Collapsed</string>
 			<key>label</key>
@@ -22,6 +22,6 @@
 		</dict>
 	</array>
 	<key>title</key>
-	<string>Things</string>
+	<string>iStudiez</string>
 </dict>
 </plist>
