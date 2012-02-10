@@ -1,11 +1,10 @@
 #import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
 #import <SpringBoard/SpringBoard.h>
 #import <objc/runtime.h>
 #import <sqlite3.h>
 
-#import "iStudiezPlugin.h"
-
-extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
+#include "LockInfo/Plugin.h"
 
 #define TITLE_LABEL_TAG             331
 #define LECTURE_TITLE_LABEL_TAG     332
@@ -14,103 +13,166 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
 #define LECTURE_TYPE_LABEL_TAG      335
 #define LECTURE_DOT_TAG             336
 
-// plugin
-@interface iStudiezPlugin (Private)
+#ifdef DEBUG
+#   define DLog(fmt, ...) NSLog((@"%s [Line %d] " fmt), __PRETTY_FUNCTION__, __LINE__, ##__VA_ARGS__);
+#else
+#   define DLog(...)
+#endif
+#define ALog(fmt, ...) NSLog((@"%s [Line %d] " fmt), __PRETTY_FUNCTION__, __LINE__, ##__VA_ARGS__);
 
-- (void)update;
-- (void)updateLectures;
-- (void)updatePreference;
-- (void)addLectureFromStatement:(sqlite3_stmt *)statement;
 
-- (UITableViewCell *)tableView:(LITableView *)tableView cellWithTitle:(NSString *)title;
-- (UITableViewCell *)tableView:(LITableView *)tableView cellWithLecture:(NSArray *)lecture;
+@interface iStudiezPlugin : NSObject <LIPluginController, LITableViewDelegate, UITableViewDataSource> 
+
+@property (nonatomic, retain) LIPlugin *plugin;
+@property (nonatomic, retain) NSString *databasePath;
+@property (nonatomic, retain) NSBundle *bundle;
+@property (nonatomic, retain) NSLock* lock;
+@property (nonatomic, retain) NSArray *sqlList;
+@property (nonatomic, retain) NSArray *lectureList;
+@property (nonatomic, retain) NSDate *lastUpdated;
+@property (nonatomic, readonly) NSDate *lastDBChange;
+@property (nonatomic, readonly) int nextCount;
+@property (nonatomic, readonly) BOOL showEarlier;
+@property (nonatomic, readonly) BOOL showFuture;
+@property (nonatomic, readonly) int futureDays;
 
 @end
 
+
+@interface iStudiezPlugin (Private)
+
+- (void)_initVariables;
+- (void)update:(NSNotification*)notif;
+- (void)_generateSQL;
+- (void)_updateLectures;
+- (NSDictionary *)_lectureFromStatement:(sqlite3_stmt *)statement;
+
+- (UITableViewCell *)_tableView:(LITableView *)tableView cellWithTitle:(NSString *)title;
+- (UITableViewCell *)_tableView:(LITableView *)tableView cellWithLecture:(NSDictionary *)lecture;
+
+@end
+
+
 @implementation iStudiezPlugin
 
-@synthesize plugin, databasePath, bundle, lock, lectureList, assignmentList, nextCount, lastChanged, prefsChanged, showEarlier, showFuture, futureDays;
+@synthesize plugin = _plugin;
+@synthesize databasePath = _databasePath;
+@synthesize bundle = _bundle;
+@synthesize lock = _lock;
+@synthesize sqlList = _sqlList;
+@synthesize lectureList = _lectureList;
+@synthesize lastUpdated = _lastUpdated;
+@synthesize lastDBChange = _lastDBChange;
 
-- (id)initWithPlugin:(LIPlugin*)thePlugin
-{
+
+- (NSDate *)lastDBChange {
+    return [[[NSFileManager defaultManager] attributesOfItemAtPath:self.databasePath error:nil] fileModificationDate];
+}
+
+- (int)nextCount {
+    int start = [self.lectureList indexOfObject:@"Next"];
+    
+    if (start == NSNotFound)
+        return 0;
+    
+    for (unsigned int i = start + 1; i < [self.lectureList count]; i++) {
+        if ([[self.lectureList objectAtIndex:i] isKindOfClass:[NSString class]])
+            return i - start - 1;
+    }
+    
+    return [self.lectureList count] - start - 1;
+}
+
+- (BOOL)showEarlier {
+    NSNumber *value = [self.plugin.preferences valueForKey:@"ShowEarlier"];
+    return [value boolValue];
+}
+
+- (BOOL)showFuture {
+    if (self.futureDays == -1)
+        return NO;
+    else
+        return YES;
+}
+
+- (int)futureDays {
+    NSNumber *value = [self.plugin.preferences valueForKey:@"FutureDays"];
+    return [value intValue];
+}
+
+
+- (id)initWithPlugin:(LIPlugin*)thePlugin {
     self = [super init];
+
     self.plugin = thePlugin;
-
-    self.lectureList = [NSMutableArray array];
-    self.assignmentList = [NSMutableArray array];
+        
+    self.plugin.tableViewDataSource = self;
+    self.plugin.tableViewDelegate = self;
     
-    self.prefsChanged = YES;
-    self.lastChanged = [NSDate distantPast];
+    [self _initVariables];
     
-    lock = [[NSConditionLock alloc] init];
+    // notification
+    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self selector:@selector(update:) name:LITimerNotification object:nil];
+    [center addObserver:self selector:@selector(update:) name:LIViewReadyNotification object:nil];
+    [center addObserver:self selector:@selector(update:) name:[self.plugin.bundleIdentifier stringByAppendingString:LIPrefsUpdatedNotification] object:nil];
+    [center addObserver:self selector:@selector(update:) name:[self.bundle.bundleIdentifier stringByAppendingString:LIApplicationDeactivatedNotification] object:nil];
+    
+    return self;
+}
 
-    plugin.tableViewDataSource = self;
-    plugin.tableViewDelegate = self;
-
-    // get DB path
+- (void)_initVariables {
+    self.lastUpdated = [NSDate distantPast];
+    
+    self.lock = [[NSLock alloc] init];
+    
     SBApplication* iStudiezApp = [[objc_getClass("SBApplicationController") sharedInstance] applicationWithDisplayIdentifier:@"com.kachalobalashoff.iStudent"];
     NSString *iStudiezPath = [[iStudiezApp path] stringByDeletingLastPathComponent];
     self.databasePath = [[iStudiezPath stringByAppendingPathComponent:@"Documents"] stringByAppendingPathComponent:(@"iStudiez.sqlite")];
     self.bundle = [NSBundle bundleWithPath:[iStudiezApp path]];
     
-    // notification
-    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
-    [center addObserver:self selector:@selector(update) name:LITimerNotification object:nil];
-    //[center addObserver:self selector:@selector(update) name:LIPrefsUpdatedNotification object:nil];
-    [center addObserver:self selector:@selector(update) name:LIViewReadyNotification object:nil];
-
-    return self;
+    self.lectureList = [NSArray array];
+    self.sqlList = [NSArray array];
 }
 
-- (void)dealloc
-{
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    
     self.plugin = nil;
-    self.lectureList = nil;
-    self.assignmentList = nil;
-    self.databasePath = nil;
-    self.bundle = nil;
-    self.lastChanged = nil;
+    _databasePath = nil;
+    _bundle = nil;
     [self.lock release];
-    self.lock = nil;
+    _lock = nil;
+    self.sqlList = nil;
+    self.lectureList = nil;
+    self.lastUpdated = nil;
+    _lastDBChange = nil;
 
     [super dealloc];
 }
 
 #pragma mark UITableViewDataSource
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section 
-{
+//Total number of rows in table
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    DLog(@"iSP: numberOfRowsInSection - %d", [self.lectureList count]);
     return [self.lectureList count];
 }
 
--(NSInteger) tableView:(LITableView*)tableView numberOfItemsInSection:(NSInteger)section
-{
+//Number to be displayed in header
+-(NSInteger) tableView:(LITableView*)tableView numberOfItemsInSection:(NSInteger)section {
+    DLog(@"iSP: numberOfItemsInSection - %d", self.nextCount);
     return self.nextCount;
 }
 
-- (BOOL)tableView:(LITableView*) tableView showCountForHeaderInSection:(NSInteger) section
-{
+//Display number in header
+- (BOOL)tableView:(LITableView*) tableView showCountForHeaderInSection:(NSInteger) section {
     if (self.nextCount > 0)
         return YES;
     else
         return NO;
 }
 
-- (UITableViewCell *)tableView:(LITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath 
-{
-    id object = [self.lectureList objectAtIndex:indexPath.row];
-
-    UITableViewCell *cell = nil;
-    if ([object isKindOfClass:[NSString class]]) {
-        cell = [self tableView:tableView cellWithTitle:object];
-    } else {
-        cell = [self tableView:tableView cellWithLecture:object];
-    }
-
-    return cell;
-}
-
-- (CGFloat)tableView:(LITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
-{
+- (CGFloat)tableView:(LITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     id object = [self.lectureList objectAtIndex:indexPath.row];
 
     if ([object isKindOfClass:[NSString class]]) {
@@ -121,8 +183,20 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
     }
 }
 
-- (UITableViewCell *)tableView:(LITableView *)tableView cellWithTitle:(NSString *)title
-{
+- (UITableViewCell *)tableView:(LITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    id object = [self.lectureList objectAtIndex:indexPath.row];
+
+    UITableViewCell *cell = nil;
+    if ([object isKindOfClass:[NSString class]]) {
+        cell = [self _tableView:tableView cellWithTitle:object];
+    } else {
+        cell = [self _tableView:tableView cellWithLecture:object];
+    }
+
+    return cell;
+}
+
+- (UITableViewCell *)_tableView:(LITableView *)tableView cellWithTitle:(NSString *)title {
     NSString *reuseId = @"TitleCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseId];
     if (cell == nil) {
@@ -130,7 +204,7 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
         
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
-        LILabel *titleLabel = [tableView labelWithFrame:CGRectMake(9, 2, 302, 16)];
+        LILabel *titleLabel = [tableView labelWithFrame:CGRectMake(9, 2, 302, 17)];
         titleLabel.style = tableView.theme.headerStyle;
         titleLabel.numberOfLines = 1;
         titleLabel.backgroundColor = [UIColor clearColor];
@@ -146,8 +220,7 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
     return cell;
 }
 
-- (UITableViewCell *)tableView:(LITableView *)tableView cellWithLecture:(NSArray *)lecture
-{
+- (UITableViewCell *)_tableView:(LITableView *)tableView cellWithLecture:(NSDictionary *)lecture {
     NSString *reuseId = @"LectureCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseId];
     if (cell == nil) {
@@ -185,67 +258,79 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
         typeLabel.tag = LECTURE_TYPE_LABEL_TAG;
         [cell.contentView addSubview:typeLabel];
         
-        UIImageView *dot = [[[UIImageView alloc] initWithImage:[UIImage li_imageWithContentsOfResolutionIndependentFile:[self.plugin.bundle pathForResource:@"dotmask" ofType:@"png"]]] autorelease];
+        UIImageView *dot = [[UIImageView alloc] initWithImage:[UIImage li_imageWithContentsOfResolutionIndependentFile:[self.plugin.bundle pathForResource:@"dotmask" ofType:@"png"]]];
         dot.frame = dotFrame;
         dot.layer.cornerRadius = 5;
         dot.tag = LECTURE_DOT_TAG;
         [cell.contentView addSubview:dot];
+        [dot release];
     }
 
     LILabel *titleLabel = [cell.contentView viewWithTag:LECTURE_TITLE_LABEL_TAG];
-    titleLabel.text = (NSString *) [lecture objectAtIndex:0];
+    titleLabel.text = [lecture objectForKey:@"title"];
 
     LILabel *timeLabel = [cell.contentView viewWithTag:LECTURE_TIME_LABEL_TAG];
-    timeLabel.text = (NSString *) [lecture objectAtIndex:7];
+    timeLabel.text = [lecture objectForKey:@"start"];
     timeLabel.textAlignment = UITextAlignmentRight;
     
     LILabel *locationLabel = [cell.contentView viewWithTag:LECTURE_LOCATION_LABEL_TAG];
-    locationLabel.text = (NSString *) [lecture objectAtIndex:1];
+    locationLabel.text = [lecture objectForKey:@"location"];
     
     LILabel *typeLabel = [cell.contentView viewWithTag:LECTURE_TYPE_LABEL_TAG];
-    typeLabel.text = (NSString *) [lecture objectAtIndex:2];
+    typeLabel.text = [lecture objectForKey:@"type"];
     typeLabel.textAlignment = UITextAlignmentRight;
     
     UIImageView *dot = [cell.contentView viewWithTag:LECTURE_DOT_TAG];
-    NSNumber *hue = [lecture objectAtIndex:4];
-    NSNumber *saturation = [lecture objectAtIndex:5];
-    NSNumber *brightness = [lecture objectAtIndex:6];
+    NSNumber *hue = [lecture objectForKey:@"hue"];
+    NSNumber *saturation = [lecture objectForKey:@"saturation"];
+    NSNumber *brightness = [lecture objectForKey:@"brightness"];
     dot.backgroundColor = [UIColor colorWithHue:[hue floatValue] saturation:[saturation floatValue] brightness:[brightness floatValue] alpha:1.0];
 
     return cell;
 }
 
 
-- (void)update
+- (void)update:(NSNotification*)notif
 {
     if (!self.plugin.enabled) {
         return;
     }
+    
+    DLog(@"iSP: update started - %@", notif.name);
 
     NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
-    [self updatePreference];
-    
-    NSDate *modificationDate = [[[NSFileManager defaultManager] attributesOfItemAtPath:self.databasePath error:nil] fileModificationDate];
-    
-    if (self.prefsChanged || [self.lastChanged compare:modificationDate] == NSOrderedAscending) {
-        if ([lock tryLock]) {
-            [self updateLectures];
-            self.prefsChanged = NO;
-            self.lastChanged = modificationDate;
-    		[lock unlock];
-    	}
+
+    @try {
+        BOOL dbChanged = [self.lastUpdated timeIntervalSinceDate:self.lastDBChange] < 0 ? YES : NO;
+        BOOL force = [notif.name isEqualToString:[self.plugin.bundleIdentifier stringByAppendingString:LIPrefsUpdatedNotification]] ||
+                     [notif.name isEqualToString:[self.bundle.bundleIdentifier stringByAppendingString:LIApplicationDeactivatedNotification]] ||
+                     [[NSDate date] timeIntervalSinceDate:self.lastUpdated] > 60;
+        DLog(@"iSP: force - %@ (%@, %@), dbChanged - %@", force ? @"YES" : @"NO", notif.name, self.lastUpdated, dbChanged ? @"YES" : @"NO");
+
+        if (force || dbChanged) {
+            if ([self.lock tryLock]) {
+                [self _generateSQL];
+                DLog(@"iSP: updating");
+                [self _updateLectures];
+        		[self.lock unlock];
+        	}
+        }
     }
+    @catch (id theException) {
+		DLog(@"iSP: %@", theException);
+	}
+    
+    DLog(@"iSP: update done");
     
     [pool release];
 }
 
-- (void)updateLectures
-{
-    int ret;
+- (void)_generateSQL {
+    NSMutableArray *newSQL = [NSMutableArray array];
+    
+    DLog(@"iSP: generating SQL");
 
-    [self.lectureList removeAllObjects];
-
-    NSString *sqlLectureNoWhere = @"SELECT "
+    NSString *basicSQL = @"SELECT "
         " infocourse.ZNAME1 AS course, "
         " infolocation.ZBUILDING || ' ' || infolocation.ZROOM AS location, "
         " info.ZTYPEIDENTIFIER AS type, "
@@ -261,38 +346,83 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
         "INNER JOIN ZMERGEABLE AS infocourse ON infocourse.Z_PK=info.ZCOURSE4 "
         "INNER JOIN ZMERGEABLE AS infocolour ON infocolour.Z_PK=infocourse.ZCOLOR ";
 
+    if (self.showEarlier) {
+        [newSQL addObject:@"Earlier"];
+        [newSQL addObject:[basicSQL stringByAppendingString:@"WHERE "
+            " event.ZENDDATE < strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND "
+            " event.ZDATE = strftime('%s', 'now', 'start of day') - strftime('%s', '2001-01-01 00:00:00') "
+            "ORDER BY start;"]];
+    }
+
+    [newSQL addObject:@"Now"];
+    [newSQL addObject:[basicSQL stringByAppendingString:@"WHERE "
+        " event.ZSTARTDATE <= strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND "
+        " event.ZENDDATE >= strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00');"]];
+
+    [newSQL addObject:@"Next"];
+    [newSQL addObject:[basicSQL stringByAppendingString:@"WHERE "
+        " event.ZSTARTDATE > strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND"
+        " event.ZDATE = strftime('%s', 'now', 'start of day') - strftime('%s', '2001-01-01 00:00:00') "
+        "ORDER BY start;"]];
+
+    if (self.showFuture) {
+        NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
+        dateFormatter.timeStyle = NSDateFormatterNoStyle;
+        dateFormatter.dateFormat = [NSDateFormatter dateFormatFromTemplate:@"EEEE, d MMMM" options:0 locale:[NSLocale currentLocale]];
+
+        for (int i = 1; i <= self.futureDays; i++) {
+            [newSQL addObject:i == 1 ? @"Tomorrow" : [dateFormatter stringFromDate:[[NSDate date] dateByAddingTimeInterval:i*24*60*60]]];
+            [newSQL addObject:[basicSQL stringByAppendingString:[NSString stringWithFormat:@"WHERE "
+                " event.ZDATE = strftime('%%s', 'now', 'start of day', '+%d days') - strftime('%%s', '2001-01-01 00:00:00') "
+                "ORDER BY start;", i]]];
+        }
+
+        [dateFormatter release];
+    }
+
+    DLog(@"iSP: generated SQL");
+    
+    self.sqlList = [newSQL copy];
+}
+
+- (void)_updateLectures {
+    int ret;
+    NSMutableArray *newLectureList = [NSMutableArray array];
+
     sqlite3 *database = NULL;
+    
+    DLog(@"iSP: updating lectures");
+    
     @try {
         ret = sqlite3_open([self.databasePath UTF8String], &database);
         if (ret != SQLITE_OK) {
-            NSLog(@"iSP: sqlite3_open ret %d", ret);
+            ALog(@"iSP: sqlite3_open ret %d", ret);
             return;
         }
-
-        // earlier
-        if (self.showEarlier) {
+        
+        for (unsigned int i = 0; i < [self.sqlList count]; i++) {
             sqlite3_stmt *statement = NULL;
             @try {
-                NSString *sqlForEarlier = [sqlLectureNoWhere stringByAppendingString:@"WHERE "
-                    " event.ZENDDATE < strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND "
-                    " event.ZDATE = strftime('%s', 'now', 'start of day') - strftime('%s', '2001-01-01 00:00:00') "
-                    "ORDER BY start;"];
-                ret = (sqlite3_prepare_v2 (database, [sqlForEarlier UTF8String], -1, &statement, NULL) != SQLITE_OK) ;
+                NSString *title = [self.sqlList objectAtIndex:i];
+                NSString *sql = [self.sqlList objectAtIndex:++i];
+                
+                DLog(@"iSP: %d, %@", i, title);
+                
+                ret = (sqlite3_prepare_v2 (database, [sql UTF8String], -1, &statement, NULL) != SQLITE_OK) ;
                 if (ret != SQLITE_OK) {
-                    NSLog(@"iSP: prepare failed %d", ret);
+                    ALog(@"iSP: prepare failed %d", ret);
+                    ALog(@"iSP: SQL - %@", sql);
                     return;
                 }
 
-                //NSLog(@"LI: iStudiez Earlier SQL: %@", sqlForEarlier);
-
                 BOOL titleAdded = NO;
-                while (sqlite3_step (statement) == SQLITE_ROW) {
+                while (sqlite3_step(statement) == SQLITE_ROW) {
                     if (!titleAdded) {
-                        [lectureList addObject:@"Earlier"];
+                        [newLectureList addObject:title];
                         titleAdded = YES;
                     }
 
-                    [self addLectureFromStatement:statement];
+                    [newLectureList addObject:[self _lectureFromStatement:statement]];
                 }
             }
             @finally {
@@ -302,124 +432,20 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
                 }
             }
         }
-
-        // now
-        sqlite3_stmt *statement = NULL;
-        @try {
-            NSString *sqlForNow = [sqlLectureNoWhere stringByAppendingString:@"WHERE "
-                " event.ZSTARTDATE <= strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND "
-                " event.ZENDDATE >= strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00');"];
-            ret = (sqlite3_prepare_v2 (database, [sqlForNow UTF8String], -1, &statement, NULL) != SQLITE_OK) ;
-            if (ret != SQLITE_OK) {
-                NSLog(@"iSP: prepare failed %d", ret);
-                return;
-            }
-
-            //NSLog(@"LI: iStudiez Now SQL: %@", sqlForNow);
-
-            BOOL titleAdded = NO;
-            while (sqlite3_step (statement) == SQLITE_ROW) {
-                if (!titleAdded) {
-                    [lectureList addObject:@"Now"];
-                    titleAdded = YES;
-                }
-
-                [self addLectureFromStatement:statement];
-            }
-        }
-        @finally {
-            if (statement != NULL) {
-                sqlite3_finalize(statement);
-                statement = NULL;
-            }
-        }
-
-        // next
-        @try {
-            NSString *sqlForNext = [sqlLectureNoWhere stringByAppendingString:@"WHERE "
-                " event.ZSTARTDATE > strftime('%s', 'now') - strftime('%s', '2001-01-01 00:00:00') AND"
-                " event.ZDATE = strftime('%s', 'now', 'start of day') - strftime('%s', '2001-01-01 00:00:00') "
-                "ORDER BY start;"];
-            ret = (sqlite3_prepare_v2 (database, [sqlForNext UTF8String], -1, &statement, NULL) != SQLITE_OK);
-            if (ret != SQLITE_OK) {
-                NSLog(@"iSP: prepare failed %d", ret);
-                return;
-            }
-
-            //NSLog(@"LI: iStudiez Next SQL: %@", sqlForNext);
-
-            BOOL titleAdded = NO;
-            self.nextCount = 0;
-            while (sqlite3_step (statement) == SQLITE_ROW) {
-                if (!titleAdded) {
-                    [lectureList addObject:@"Next"];
-                    titleAdded = YES;
-                }
-
-                self.nextCount++;
-                [self addLectureFromStatement:statement];
-            }
-        }
-        @finally {
-            if (statement != NULL) {
-                sqlite3_finalize(statement);
-            }
-        }
-
-        // future
-        if (self.showFuture) {
-            NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-            dateFormatter.timeStyle = NSDateFormatterNoStyle;
-            dateFormatter.dateFormat = [NSDateFormatter dateFormatFromTemplate:@"EEEE, d MMMM" options:0 locale:[NSLocale currentLocale]];
-
-            @try {
-                for (int i = 1; i <= self.futureDays; i++) {
-                    NSString *sqlForFuture = [sqlLectureNoWhere stringByAppendingString:[NSString stringWithFormat:@"WHERE "
-                        " event.ZDATE = strftime('%%s', 'now', 'start of day', '+%d days') - strftime('%%s', '2001-01-01 00:00:00') "
-                        "ORDER BY start;", i]];
-                    ret = (sqlite3_prepare_v2 (database, [sqlForFuture UTF8String], -1, &statement, NULL) != SQLITE_OK);
-                    if (ret != SQLITE_OK) {
-                        NSLog(@"iSP: prepare failed %d", ret);
-                        return;
-                    }
-
-                    //NSLog(@"LI: iStudiez Future SQL: %@", sqlForFuture);
-
-                    BOOL titleAdded = NO;
-                    while (sqlite3_step (statement) == SQLITE_ROW) {
-                        if (!titleAdded) {
-                            if (i == 1) {
-                                [lectureList addObject:@"Tomorrow"];
-                            } else {
-                                [lectureList addObject:[dateFormatter stringFromDate:[[NSDate date] dateByAddingTimeInterval:i*24*60*60]]];
-                            }
-                            titleAdded = YES;
-                        }
-
-                        [self addLectureFromStatement:statement];
-                    }
-                }
-            }
-            @finally {
-                if (statement != NULL) {
-                    sqlite3_finalize(statement);
-                }
-                [dateFormatter release];
-            }
-        }
-
     }
     @finally {
         if (database != NULL) {
             sqlite3_close(database);
+            self.lectureList = [newLectureList copy];
+            self.lastUpdated = [NSDate date];
+            [[NSNotificationCenter defaultCenter] postNotificationName:LIUpdateViewNotification object:self.plugin userInfo:nil];
         }
     }
-
-    //[[NSNotificationCenter defaultCenter] postNotificationName:LIUpdateViewNotification object:self.plugin userInfo:nil];
+    
+    DLog(@"iSP: updated lectures");
 }
 
-- (void)addLectureFromStatement:(sqlite3_stmt *)statement
-{
+- (NSDictionary *)_lectureFromStatement:(sqlite3_stmt *)statement {
     const char *titlePtr = (const char*) sqlite3_column_text (statement, 0);
     const char *locationPtr = (const char*) sqlite3_column_text (statement, 1);
     const char *typePtr = (const char*) sqlite3_column_text (statement, 2);
@@ -437,32 +463,17 @@ extern "C" CFStringRef UIDateFormatStringForFormatType(CFStringRef type);
     NSString *icon = [NSString stringWithUTF8String:(iconPtr == NULL ? "" : iconPtr)];
     NSString *start = [NSString stringWithUTF8String:(startPtr == NULL ? "" : startPtr)];
     NSString *end = [NSString stringWithUTF8String:(endPtr == NULL ? "" : endPtr)];
-    NSArray *lecture = [NSArray arrayWithObjects:title, location, type, icon, [NSNumber numberWithDouble:hue], [NSNumber numberWithDouble:saturation], [NSNumber numberWithDouble:brightness], start, end, nil];
-    [lectureList addObject:lecture];
-}
-
-- (void)updatePreference
-{
-    NSNumber *value = nil;
-
-    value = [self.plugin.preferences valueForKey:@"ShowEarlier"];
-    if ([value boolValue] != self.showEarlier)
-        prefsChanged = YES;
-    self.showEarlier = [value boolValue];
-
-    value = [self.plugin.preferences valueForKey:@"FutureDays"];
-    if ([value intValue] != self.futureDays)
-        prefsChanged = YES;
-    switch ([value intValue]) {
-        case -1:
-        self.showFuture = NO;
-        self.futureDays = -1;
-        break;
-        default:
-        self.showFuture = YES;
-        self.futureDays = [value intValue];
-        break;
-    }
+    NSDictionary *lecture = [NSDictionary dictionaryWithObjectsAndKeys:title, @"title",
+        location, @"location",
+        type, @"type",
+        icon, @"icon",
+        [NSNumber numberWithDouble:hue], @"hue",
+        [NSNumber numberWithDouble:saturation], @"saturation",
+        [NSNumber numberWithDouble:brightness], @"brightness",
+        start, @"start",
+        end, @"end", nil];
+    
+    return lecture;
 }
 
 @end

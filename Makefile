@@ -10,6 +10,7 @@ ADDITIONAL_LDFLAGS = -framework UIKit \
 						-F$(SYSROOT)/System/Library/Frameworks \
 						-F$(SYSROOT)/System/Library/PrivateFrameworks \
 						-lsqlite3
+#ADDITIONAL_CFLAGS = -DDEBUG
 
 ifeq ($(shell [ -f ./framework/makefiles/common.mk ] && echo 1 || echo 0),0)
 all clean package install::
